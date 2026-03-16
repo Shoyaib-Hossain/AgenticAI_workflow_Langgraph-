@@ -1,0 +1,95 @@
+from dotenv import load_dotenv
+from typing_extensions import TypedDict
+from typing import Optional, Literal
+from langgraph.graph import StateGraph, START, END
+from openai import OpenAI
+import os
+ 
+load_dotenv()
+ 
+client = OpenAI()
+ 
+class State(TypedDict):
+    user_query: str
+    llm_output: Optional[str]
+    is_good: Optional[bool]
+ 
+ 
+# First response from OpenAI
+def chatbot(state: State):
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "user", "content": state["user_query"]}
+        ]
+    )
+ 
+    return {"llm_output": response.choices[0].message.content}
+ 
+ 
+# OpenAI evaluates the response
+def evaluate_response(state: State) -> Literal["retry", "endnode"]:
+    evaluation = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[
+            {
+                "role": "system",
+                "content": """You are a response evaluator.
+Given a user query and an AI response, decide if the response is good or bad.
+Reply with ONLY one word: good or bad."""
+            },
+            {
+                "role": "user",
+                "content": f"""
+User Query: {state['user_query']}
+AI Response: {state['llm_output']}
+Is this response good or bad?
+"""
+            }
+        ]
+    )
+ 
+    verdict = evaluation.choices[0].message.content.strip().lower()
+    print("\nEvaluator verdict:", verdict)
+ 
+    if verdict == "good":
+        return "endnode"
+ 
+    return "retry"
+ 
+ 
+# Retry using a stronger OpenAI model
+def retry(state: State):
+    response = client.chat.completions.create(
+        model="gpt-4.1",  # stronger retry model
+        messages=[
+            {"role": "user", "content": state["user_query"]}
+        ]
+    )
+ 
+    return {"llm_output": response.choices[0].message.content}
+ 
+ 
+def endnode(state: State):
+    return state
+ 
+ 
+graph_builder = StateGraph(State)
+ 
+graph_builder.add_node("chatbot", chatbot)
+graph_builder.add_node("retry", retry)
+graph_builder.add_node("endnode", endnode)
+ 
+graph_builder.add_edge(START, "chatbot")
+ 
+graph_builder.add_conditional_edges("chatbot", evaluate_response)
+ 
+graph_builder.add_edge("retry", "endnode")
+graph_builder.add_edge("endnode", END)
+ 
+graph = graph_builder.compile()
+ 
+updated_state = graph.invoke({"user_query": "what is 10+10?"})
+ 
+print("\nFinal Output:", updated_state)
+
